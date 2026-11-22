@@ -1,3 +1,4 @@
+import os
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from backend.app.core.config import settings
@@ -5,6 +6,9 @@ from backend.app.core.logging import logger
 from backend.app.db.base import Base
 
 def get_engine_url(url: str) -> str:
+    # On Vercel, if default SQLite is used, store in writable /tmp
+    if os.environ.get("VERCEL") and "cryptopilot.db" in url and not url.startswith("sqlite+aiosqlite:////tmp/"):
+        return "sqlite+aiosqlite:////tmp/cryptopilot.db"
     # Standardize url for async drivers
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)

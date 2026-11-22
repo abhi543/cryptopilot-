@@ -18,25 +18,39 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.PROJECT_NAME} in '{settings.ENVIRONMENT}' mode...")
 
     # Initialize database tables
-    await init_db()
+    try:
+        await init_db()
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
 
-    # Start live market broadcaster task
-    await market_broadcaster.start_broadcasting()
+    # Only start persistent background socket/scanner loops when not running serverless on Vercel
+    import os
+    if not os.environ.get("VERCEL"):
+        # Start live market broadcaster task
+        await market_broadcaster.start_broadcasting()
 
-    # Restore and warm up active strategies from database
-    from backend.app.strategies.registry import strategy_manager
-    await strategy_manager.restore_active_from_db()
+        # Restore and warm up active strategies from database
+        from backend.app.strategies.registry import strategy_manager
+        await strategy_manager.restore_active_from_db()
 
-    # Start live market scanner (Exchange WebSocket + REST fallback)
-    await market_scanner.start()
+        # Start live market scanner (Exchange WebSocket + REST fallback)
+        await market_scanner.start()
 
     yield
 
     # Clean up resources
     logger.info("Shutting down CryptoPilot backend...")
-    await market_scanner.stop()
-    await market_broadcaster.stop_broadcasting()
-    await exchange_service.close()
+    import os
+    if not os.environ.get("VERCEL"):
+        try:
+            await market_scanner.stop()
+            await market_broadcaster.stop_broadcasting()
+        except Exception:
+            pass
+    try:
+        await exchange_service.close()
+    except Exception:
+        pass
     logger.info("Cleanup completed.")
 
 app = FastAPI(
