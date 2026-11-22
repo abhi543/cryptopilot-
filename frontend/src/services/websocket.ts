@@ -8,7 +8,17 @@ class LiveFeedSocket {
   private pingInterval: any = null;
 
   constructor() {
-    this.url = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/feed";
+    if (typeof window !== "undefined") {
+      const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      if (isLocal) {
+        this.url = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws/feed";
+      } else {
+        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        this.url = process.env.NEXT_PUBLIC_WS_URL || `${proto}//${window.location.host}/ws/feed`;
+      }
+    } else {
+      this.url = "ws://localhost:8000/ws/feed";
+    }
   }
 
   public connect() {

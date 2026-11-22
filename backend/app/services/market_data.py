@@ -19,6 +19,17 @@ class MarketDataBroadcaster:
         await websocket.accept()
         self._active_connections.add(websocket)
         logger.info(f"WebSocket client connected. Active connections: {len(self._active_connections)}")
+        
+        # Instantly deliver cached tickers to connecting client (zero latency on connection)
+        cached = [t.model_dump() for t in exchange_service._ticker_cache.values()]
+        if cached:
+            try:
+                await websocket.send_json({
+                    "type": "TICKER_UPDATE",
+                    "data": cached
+                })
+            except Exception:
+                pass
 
     def disconnect(self, websocket: WebSocket):
         self._active_connections.discard(websocket)
@@ -57,32 +68,30 @@ class MarketDataBroadcaster:
     async def _poll_loop(self):
         while self._running:
             try:
-                tickers_data = []
                 monitored = exchange_service.get_monitored_pairs()
-                for sym in monitored:
-                    try:
-                        ticker = await exchange_service.fetch_ticker(sym)
-                        ticker_dict = ticker.model_dump()
-                        tickers_data.append(ticker_dict)
+                # High-speed parallel/bulk fetch across all monitored pairs in ~250ms
+                tickers = await exchange_service.fetch_tickers(monitored)
+                tickers_data = []
 
-                        # 1. Multi-Pair Universal Bot Engine: Evaluates ALL pairs simultaneously!
-                        if auto_trader.enabled:
-                            asyncio.create_task(auto_trader.evaluate_ticker(ticker_dict))
+                for ticker in tickers:
+                    ticker_dict = ticker.model_dump()
+                    tickers_data.append(ticker_dict)
+                    sym = ticker.symbol
 
-                        # 2. Also evaluate any custom user-configured strategies
-                        for s_id, strat in strategy_manager._instances.items():
-                            if strat.symbol == sym:
-                                sig = strat.on_tick(ticker_dict)
-                                if sig:
-                                    # Broadcast signal
-                                    await self.broadcast_json({
-                                        "type": "NEW_SIGNAL",
-                                        "data": sig.model_dump()
-                                    })
-                                    # Trigger Autonomous Continuous Execution
-                                    asyncio.create_task(auto_trader.handle_signal(sig))
-                    except Exception as e:
-                        logger.debug(f"Tick fetch skipped for {sym}: {e}")
+                    # 1. Multi-Pair Universal Bot Engine: Evaluates ALL pairs simultaneously!
+                    if auto_trader.enabled:
+                        asyncio.create_task(auto_trader.evaluate_ticker(ticker_dict))
+
+                    # 2. Also evaluate any custom user-configured strategies
+                    for s_id, strat in strategy_manager._instances.items():
+                        if strat.symbol == sym:
+                            sig = strat.on_tick(ticker_dict)
+                            if sig:
+                                await self.broadcast_json({
+                                    "type": "NEW_SIGNAL",
+                                    "data": sig.model_dump()
+                                })
+                                asyncio.create_task(auto_trader.handle_signal(sig))
 
                 if tickers_data:
                     await self.broadcast_json({

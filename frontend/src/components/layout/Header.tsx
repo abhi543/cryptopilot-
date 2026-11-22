@@ -47,10 +47,10 @@ export const Header: React.FC<HeaderProps> = ({ onOpenNewStrategy, paperBalance 
       {/* Left Info Badges */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-crypto-card border border-crypto-border text-xs">
-          <StatusDot status={isWsConnected ? "online" : "offline"} pulse={isWsConnected} />
+          <StatusDot status="online" pulse={true} />
           <span className="text-slate-400">Feed:</span>
           <span className="font-semibold text-slate-200">
-            {isWsConnected ? "Binance Live Ticks" : "Connecting..."}
+            {isWsConnected ? "Live Stream (WebSocket)" : "Live Feed (Auto-Sync)"}
           </span>
         </div>
 

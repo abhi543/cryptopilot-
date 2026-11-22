@@ -2,6 +2,7 @@ from typing import List, Any, Dict
 from fastapi import APIRouter, Query, HTTPException, status
 from pydantic import BaseModel
 from backend.app.services.exchange_service import exchange_service
+from backend.app.services.auto_trader import auto_trader
 from backend.app.schemas.market import Ticker, OHLCV, MarketOverview
 from backend.app.core.config import settings
 
@@ -50,7 +51,18 @@ def remove_trading_pair(symbol: str) -> Any:
 async def get_tickers(symbols: str = Query(None, description="Comma-separated symbols, e.g. BTC/USDT,ETH/USDT")) -> Any:
     """Fetch current tickers for requested or default crypto symbols."""
     target_symbols = [s.strip() for s in symbols.split(",")] if symbols else settings.DEFAULT_TICKERS
-    return await exchange_service.fetch_tickers(target_symbols)
+    tickers = await exchange_service.fetch_tickers(target_symbols)
+
+    # Drive the autonomous trading engine on ticker fetches (ensures active trading across all environments)
+    if auto_trader.enabled:
+        for t in tickers:
+            try:
+                import asyncio
+                asyncio.create_task(auto_trader.evaluate_ticker(t.model_dump()))
+            except Exception:
+                pass
+
+    return tickers
 
 @router.get("/ohlcv", response_model=List[OHLCV])
 async def get_ohlcv(

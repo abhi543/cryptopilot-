@@ -19,7 +19,7 @@ class AutoTraderEngine:
 
     def __init__(self):
         self.enabled: bool = True
-        self.cooldown_sec: float = 20.0  # 20s cooldown per pair to avoid rapid order spam
+        self.cooldown_sec: float = 8.0  # Responsive 8s cooldown per pair to avoid rapid order spam
         self._last_trade_time: Dict[str, float] = {}
         self._price_history: Dict[str, List[float]] = {}
         self.total_auto_trades: int = 0
@@ -54,36 +54,48 @@ class AutoTraderEngine:
             self._price_history[symbol].pop(0)
 
         history = self._price_history[symbol]
-        if len(history) < 2:
-            return
 
         # Check if an open position already exists for this pair
         pos = exchange_service.get_position_for_symbol(symbol, source="bot")
         signal = None
 
         if not pos:
-            # Multi-Pair Autonomous Futures Strategy:
-            # Open LONG on dips, Open SHORT on rallies/exhaustion
+            # Active Multi-Pair Autonomous Futures Strategy:
+            pct_24h = float(ticker.get("percentage_24h") or 0.0)
             avg_price = sum(history) / len(history)
-            price_change = ((price - history[0]) / history[0]) * 100.0
+            diff_from_avg = ((price - avg_price) / avg_price) * 100.0
 
-            if price <= avg_price * 0.9995:
+            if pct_24h > 1.0 or diff_from_avg < -0.01:
+                # Upward trend momentum or micro-dip: Enter LONG (10x Leverage)
                 signal = SignalCreate(
                     strategy_id="multi-pair-auto",
                     symbol=symbol,
                     signal_type="BUY",
                     price=price,
-                    confidence=0.88,
-                    reason=f"Futures Bot: Dip Long entry on {symbol} @ ${price:,.2f} (10x Leverage)"
+                    confidence=0.91,
+                    reason=f"Futures Bot: Trend Long entry on {symbol} @ ${price:,.2f} (+{pct_24h:.1f}% 24h, 10x Lev)"
                 )
-            elif price >= avg_price * 1.0008:
+            elif pct_24h < -1.0 or diff_from_avg > 0.01:
+                # Downward trend momentum or micro-rally: Enter SHORT (10x Leverage)
                 signal = SignalCreate(
                     strategy_id="multi-pair-auto",
                     symbol=symbol,
                     signal_type="SELL",
                     price=price,
-                    confidence=0.87,
-                    reason=f"Futures Bot: Overbought Short entry on {symbol} @ ${price:,.2f} (10x Leverage)"
+                    confidence=0.89,
+                    reason=f"Futures Bot: Trend Short entry on {symbol} @ ${price:,.2f} ({pct_24h:.1f}% 24h, 10x Lev)"
+                )
+            else:
+                # Flat/neutral market: Alternate Long and Short to balance futures desk
+                side = "BUY" if (len(history) % 2 == 1) else "SELL"
+                side_label = "Long" if side == "BUY" else "Short"
+                signal = SignalCreate(
+                    strategy_id="multi-pair-auto",
+                    symbol=symbol,
+                    signal_type=side,
+                    price=price,
+                    confidence=0.86,
+                    reason=f"Futures Bot: Micro-cycle {side_label} entry on {symbol} @ ${price:,.2f} (10x Lev)"
                 )
         else:
             # Exit / Take-Profit / Stop-Loss condition based on ROE
@@ -98,23 +110,23 @@ class AutoTraderEngine:
 
             roe_pct = pnl_pct * leverage
 
-            # Take profit at +3.0% ROE or cut loss at -6.0% ROE
-            if roe_pct >= 3.0:
+            # Take profit at +1.2% ROE or cut loss at -3.5% ROE
+            if roe_pct >= 1.2:
                 signal = SignalCreate(
                     strategy_id="multi-pair-auto",
                     symbol=symbol,
                     signal_type="CLOSE",
                     price=price,
-                    confidence=0.92,
+                    confidence=0.94,
                     reason=f"Futures Bot: Take-Profit locked +{roe_pct:.2f}% ROE on {pos_side} {symbol}"
                 )
-            elif roe_pct <= -6.0:
+            elif roe_pct <= -3.5:
                 signal = SignalCreate(
                     strategy_id="multi-pair-auto",
                     symbol=symbol,
                     signal_type="CLOSE",
                     price=price,
-                    confidence=0.85,
+                    confidence=0.88,
                     reason=f"Futures Bot: Stop-Loss executed {roe_pct:.2f}% ROE on {pos_side} {symbol}"
                 )
 
