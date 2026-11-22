@@ -25,7 +25,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   };
 
   try {
-    const res = await fetch(url, { ...options, headers });
+    const res = await fetch(url, { ...options, headers, cache: "no-store" });
     if (!res.ok) {
       const errorBody = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(errorBody.detail || `Request failed with status ${res.status}`);

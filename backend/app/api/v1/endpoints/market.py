@@ -50,11 +50,7 @@ def remove_trading_pair(symbol: str) -> Any:
 async def get_tickers(symbols: str = Query(None, description="Comma-separated symbols, e.g. BTC/USDT,ETH/USDT")) -> Any:
     """Fetch current tickers for requested or default crypto symbols."""
     target_symbols = [s.strip() for s in symbols.split(",")] if symbols else settings.DEFAULT_TICKERS
-    tickers = []
-    for s in target_symbols:
-        t = await exchange_service.fetch_ticker(s)
-        tickers.append(t)
-    return tickers
+    return await exchange_service.fetch_tickers(target_symbols)
 
 @router.get("/ohlcv", response_model=List[OHLCV])
 async def get_ohlcv(

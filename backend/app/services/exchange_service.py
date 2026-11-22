@@ -1,7 +1,9 @@
 import asyncio
+import json
 import time
 from typing import Dict, Any, List, Optional
 import ccxt.async_support as ccxt_async
+import httpx
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.schemas.market import Ticker, OHLCV, Position
@@ -125,6 +127,108 @@ class ExchangeService:
             return f"{base}/{quote}:{quote}"
         return f"{sym}/USDT:USDT"
 
+    async def _fetch_public_ticker(self, symbol: str) -> Optional[Ticker]:
+        """Fetch live ticker via US-compliant public endpoints when exchange is blocked by cloud IP geo-restrictions."""
+        clean_sym = symbol.replace("/", "").replace(":USDT", "").upper()
+        if not clean_sym.endswith("USDT"):
+            clean_sym = f"{clean_sym}USDT"
+
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                r = await client.get(f"https://api.binance.us/api/v3/ticker/24hr?symbol={clean_sym}")
+                if r.status_code == 200:
+                    data = r.json()
+                    last_p = float(data.get("lastPrice", 0.0))
+                    t = Ticker(
+                        symbol=symbol,
+                        last_price=last_p,
+                        high_24h=float(data.get("highPrice", last_p * 1.02)),
+                        low_24h=float(data.get("lowPrice", last_p * 0.98)),
+                        volume_24h=float(data.get("volume", 0.0)),
+                        change_24h=float(data.get("priceChange", 0.0)),
+                        percentage_24h=float(data.get("priceChangePercent", 0.0)),
+                        timestamp=int(data.get("closeTime", int(time.time() * 1000)))
+                    )
+                    self._ticker_cache[symbol] = t
+                    return t
+        except Exception as e:
+            logger.debug(f"Public fallback 1 error for {symbol}: {e}")
+
+        # Kraken fallback
+        try:
+            base_coin = symbol.split("/")[0].upper()
+            kraken_map = {"BTC": "XBTUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "DOGE": "XDGUSDT", "XRP": "XRPUSDT"}
+            k_pair = kraken_map.get(base_coin)
+            if k_pair:
+                async with httpx.AsyncClient(timeout=4.0) as client:
+                    r = await client.get(f"https://api.kraken.com/0/public/Ticker?pair={k_pair}")
+                    if r.status_code == 200:
+                        res = r.json().get("result", {})
+                        if k_pair in res:
+                            item = res[k_pair]
+                            last_p = float(item["c"][0])
+                            open_p = float(item["o"])
+                            t = Ticker(
+                                symbol=symbol,
+                                last_price=last_p,
+                                high_24h=float(item["h"][1]),
+                                low_24h=float(item["l"][1]),
+                                volume_24h=float(item["v"][1]),
+                                change_24h=last_p - open_p,
+                                percentage_24h=((last_p - open_p) / open_p * 100.0) if open_p > 0 else 0.0,
+                                timestamp=int(time.time() * 1000)
+                            )
+                            self._ticker_cache[symbol] = t
+                            return t
+        except Exception as e:
+            logger.debug(f"Public fallback 2 error for {symbol}: {e}")
+
+        return self._ticker_cache.get(symbol)
+
+    async def _fetch_public_tickers_bulk(self, symbols: List[str]) -> List[Ticker]:
+        """Fetch bulk real-time prices in a single sub-second HTTP request."""
+        clean_map = {}
+        for s in symbols:
+            c = s.replace("/", "").replace(":USDT", "").upper()
+            if not c.endswith("USDT"):
+                c = f"{c}USDT"
+            clean_map[c] = s
+
+        try:
+            encoded = json.dumps(list(clean_map.keys()), separators=(",", ":"))
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(
+                    "https://api.binance.us/api/v3/ticker/24hr",
+                    params={"symbols": encoded}
+                )
+                if r.status_code == 200:
+                    results = []
+                    for item in r.json():
+                        raw_sym = item.get("symbol")
+                        orig_sym = clean_map.get(raw_sym)
+                        if orig_sym:
+                            last_p = float(item.get("lastPrice", 0.0))
+                            t = Ticker(
+                                symbol=orig_sym,
+                                last_price=last_p,
+                                high_24h=float(item.get("highPrice", last_p * 1.02)),
+                                low_24h=float(item.get("lowPrice", last_p * 0.98)),
+                                volume_24h=float(item.get("volume", 0.0)),
+                                change_24h=float(item.get("priceChange", 0.0)),
+                                percentage_24h=float(item.get("priceChangePercent", 0.0)),
+                                timestamp=int(item.get("closeTime", int(time.time() * 1000)))
+                            )
+                            self._ticker_cache[orig_sym] = t
+                            results.append(t)
+                    if results:
+                        return results
+        except Exception as e:
+            logger.warning(f"Bulk public ticker fetch error: {e}")
+
+        # Fallback to individual fetches in parallel
+        tasks = [self.fetch_ticker(s) for s in symbols]
+        return await asyncio.gather(*tasks)
+
     async def fetch_ticker(self, symbol: str) -> Ticker:
         """Fetch current ticker price, 24h high/low and volume directly from real exchange."""
         contract_symbol = self.to_contract_symbol(symbol)
@@ -148,34 +252,29 @@ class ExchangeService:
             self._ticker_cache[symbol] = ticker
             return ticker
         except Exception as e:
-            logger.warning(f"Error fetching live ticker for {symbol}: {e}")
+            logger.warning(f"Exchange fetch failed for {symbol} ({e}), switching to real-time public live stream...")
+            live_t = await self._fetch_public_ticker(symbol)
+            if live_t:
+                return live_t
             if symbol in self._ticker_cache:
                 return self._ticker_cache[symbol]
-            # Resilient fallback so public API or dashboard never crashes on cloud IP rate-limits
-            fallback_prices = {
-                "BTC/USDT": 96500.0,
-                "ETH/USDT": 2750.0,
-                "SOL/USDT": 185.0,
-                "BNB/USDT": 650.0,
-                "XRP/USDT": 1.45,
-                "DOGE/USDT": 0.25,
-            }
-            default_p = fallback_prices.get(symbol, 100.0)
-            fallback_t = Ticker(
-                symbol=symbol,
-                last_price=default_p,
-                high_24h=default_p * 1.02,
-                low_24h=default_p * 0.98,
-                volume_24h=1000000.0,
-                change_24h=0.0,
-                percentage_24h=0.0,
-                timestamp=int(time.time() * 1000)
-            )
-            self._ticker_cache[symbol] = fallback_t
-            return fallback_t
+            raise RuntimeError(f"Unable to retrieve live market price for {symbol}: {e}")
+
+    async def fetch_tickers(self, symbols: List[str]) -> List[Ticker]:
+        """Fetch multiple tickers with parallel execution and high-speed bulk fallback."""
+        try:
+            # On Vercel or cloud environments, use the high-speed US-compliant bulk feed directly
+            import os
+            if os.environ.get("VERCEL"):
+                return await self._fetch_public_tickers_bulk(symbols)
+
+            tasks = [self.fetch_ticker(s) for s in symbols]
+            return await asyncio.gather(*tasks)
+        except Exception:
+            return await self._fetch_public_tickers_bulk(symbols)
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str = "1h", limit: int = 50) -> List[OHLCV]:
-        """Fetch candlestick bars for charting directly from real exchange."""
+        """Fetch candlestick bars for charting directly from real exchange with fallback."""
         contract_symbol = self.to_contract_symbol(symbol)
         try:
             ex = self._get_exchange()
@@ -196,7 +295,29 @@ class ExchangeService:
                 for c in raw_candles
             ]
         except Exception as e:
-            logger.error(f"Failed to fetch live OHLCV for {symbol}: {e}")
+            logger.warning(f"Exchange OHLCV fetch failed for {symbol} ({e}), fetching live bars from public stream...")
+            clean_sym = symbol.replace("/", "").replace(":USDT", "").upper()
+            if not clean_sym.endswith("USDT"):
+                clean_sym = f"{clean_sym}USDT"
+            interval = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}.get(timeframe, "1h")
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    r = await client.get(f"https://api.binance.us/api/v3/klines?symbol={clean_sym}&interval={interval}&limit={limit}")
+                    if r.status_code == 200:
+                        raw = r.json()
+                        return [
+                            OHLCV(
+                                timestamp=int(c[0]),
+                                open=float(c[1]),
+                                high=float(c[2]),
+                                low=float(c[3]),
+                                close=float(c[4]),
+                                volume=float(c[5])
+                            )
+                            for c in raw
+                        ]
+            except Exception as ex_err:
+                logger.error(f"Live OHLCV fallback failed for {symbol}: {ex_err}")
             raise RuntimeError(f"Failed to fetch real OHLCV data for {symbol}: {e}")
 
     def execute_paper_order(

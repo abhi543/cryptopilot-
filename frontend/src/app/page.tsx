@@ -94,6 +94,23 @@ export default function DashboardPage() {
   useEffect(() => {
     loadAllData();
 
+    // Auto-refresh interval (ensures live, up-to-the-second data in serverless & web deployments)
+    const pollInterval = setInterval(() => {
+      Promise.allSettled([
+        api.getTickers(),
+        api.getPortfolioSummary(),
+        api.getPositions(),
+        api.listTrades(20),
+        api.listSignals(15),
+      ]).then(([tcks, summ, pos, trds, sigs]) => {
+        if (tcks.status === "fulfilled") setTickers(tcks.value);
+        if (summ.status === "fulfilled") setSummary(summ.value);
+        if (pos.status === "fulfilled") setPositions(pos.value);
+        if (trds.status === "fulfilled") setTrades(trds.value);
+        if (sigs.status === "fulfilled") setSignals(sigs.value);
+      });
+    }, 3000);
+
     // Listen for live ticker updates over WebSocket
     const unsubTickers = liveFeed.on("TICKER_UPDATE", (incomingTickers: Ticker[]) => {
       setTickers(incomingTickers);
@@ -108,6 +125,7 @@ export default function DashboardPage() {
     });
 
     return () => {
+      clearInterval(pollInterval);
       unsubTickers();
       unsubTrades();
     };
