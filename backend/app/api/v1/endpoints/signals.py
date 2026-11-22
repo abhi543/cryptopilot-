@@ -10,7 +10,8 @@ from backend.app.core.logging import logger
 
 router = APIRouter()
 
-@router.get("/", response_model=List[SignalResponse])
+@router.get("", response_model=List[SignalResponse])
+@router.get("/", response_model=List[SignalResponse], include_in_schema=False)
 async def list_signals(
     strategy_id: Optional[str] = None,
     symbol: Optional[str] = None,

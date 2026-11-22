@@ -86,6 +86,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 app.include_router(ws_router)
 
 @app.get("/health", tags=["System"])
+@app.get("/api/v1/health", tags=["System"])
 async def health_check():
     return {
         "status": "healthy",

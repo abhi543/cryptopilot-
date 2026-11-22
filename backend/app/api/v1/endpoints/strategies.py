@@ -45,7 +45,8 @@ def get_strategy_templates() -> Any:
         }
     ]
 
-@router.get("/", response_model=List[StrategyResponse])
+@router.get("", response_model=List[StrategyResponse])
+@router.get("/", response_model=List[StrategyResponse], include_in_schema=False)
 async def list_strategies(
     skip: int = 0,
     limit: int = 100,

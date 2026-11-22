@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     EXCHANGE_API_SECRET: str = ""
     EXCHANGE_PASSPHRASE: str = ""
 
+    @field_validator("DEFAULT_EXCHANGE", mode="before")
+    def validate_exchange(cls, v: str) -> str:
+        if not v or str(v).lower() in ["binance", ""]:
+            return "bybit"
+        return str(v).lower()
+
     # Futures paper trading mode
     TRADING_MODE: str = "paper"  # 'paper' | 'backtest'
     ALLOW_LIVE_TRADING: bool = False

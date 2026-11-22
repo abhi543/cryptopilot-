@@ -139,7 +139,8 @@ async def close_position_endpoint(
     await db.refresh(db_trade)
     return {"message": f"Closed {pos_side} position for {req.symbol}", "trade": db_trade}
 
-@router.get("/", response_model=List[TradeResponse])
+@router.get("", response_model=List[TradeResponse])
+@router.get("/", response_model=List[TradeResponse], include_in_schema=False)
 async def list_trades(
     strategy_id: Optional[str] = None,
     symbol: Optional[str] = None,
